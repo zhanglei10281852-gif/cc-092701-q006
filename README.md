@@ -32,7 +32,21 @@ uvicorn app.main:app --host 0.0.0.0 --port 8432
 curl -sS http://127.0.0.1:8432/api/system/health
 ```
 
-课程任务运营接口使用 `/api/compute` 前缀，身份、角色、审计和系统接口分别位于 `/api/auth`、`/api/roles`、`/api/audit` 与 `/api/system`。
+课程任务运营接口使用 `/api/compute` 前缀，身份、角色、审计和系统接口分别位于 `/api/auth`、`/api/roles`、`/api/audit` 与 `/api/system`。数控实训步骤依赖流程位于 `/api/cnc`。
+
+## 数控实训步骤流程
+
+一次实训可一次性提交为带依赖关系的步骤图（读图 → 计算 → 模拟 → 教师复核），接口前缀 `/api/cnc`：
+
+- `POST /api/cnc/flows`：一次性提交步骤与依赖。写入前拒绝重复步骤、重复依赖、自依赖、孤立引用与环路；提交顺序无关，按规范化摘要判重——同结构重复提交复用原流程（返回 `200` 且 `reused=true`），同编码不同结构返回 `409`。
+- `POST /api/cnc/flows/{flow_code}/runs`：基于已定义流程创建一次实训实例。仅当某步骤的全部上游都成功时它才进入 `ready`（可领取），否则保持 `waiting` 且不可领取；`GET /api/cnc/runs/{run_id}` 为每个节点返回 `waiting_reasons`，逐项说明被哪个上游、以何种状态阻塞。
+- `POST /api/cnc/runs/{id}/claim`：按拓扑顺序领取一个就绪步骤（也可指定 `step_code`），通过租约与即时事务保证同一节点不会被并发重复领取。
+- `complete / fail / cancel / redo`：上游进入终态后按课程策略解释后继：
+  - `policy.on_fail`：`block`（阻断，后继保持等待）或 `skip`（级联跳过）；
+  - `policy.on_cancel`：`block` 或 `skip`；
+  - `policy.on_redo`：`reopen`（重做节点并收回全部后继重新派生）或 `block`（仅重做该步骤，后继不动）。
+  - 可重试失败按退避窗口重新开放，重试耗尽才转终态；`POST /api/cnc/recovery/expired-leases` 处理租约过期。
+- 流程定义、节点状态、租约与事件全部持久化到 SQLite；重启服务后实例、租约归属与可领取边界不漂移（恢复边界仅由数据库时间戳与注入时钟决定）。
 
 ## 测试与编译检查
 
@@ -52,6 +66,7 @@ python -m app.cli compute-demo
 
 ```text
 app/compute/       任务模板、配额、提交、领取、回执和人工干预
+app/cnc/           数控实训步骤依赖流程：定义校验、领取门控与上游终态传播
 app/api/            登录、角色、审计和系统管理接口
 app/core/           时钟、安全、异常和分页能力
 app/repositories/   SQLite 查询与事务封装
